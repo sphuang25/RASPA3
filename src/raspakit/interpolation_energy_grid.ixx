@@ -37,6 +37,9 @@ export struct InterpolationEnergyGrid
 
   void makeExternalFieldInterpolationGrid(std::ostream& stream, const ForceField& forceField, const SimulationBox &simulationBox);
 
+  void saveGrid(const std::string& filename, std::ostream& stream) const;
+  bool loadGrid(const std::string& filename, std::ostream& stream);
+
   void makeFrameworkInterpolationGrid(std::ostream &stream, ForceFieldSettings::InterpolationGridType interpolationGridType,
                              const ForceField &forceField, const Framework &framework, double cutOff,
                              std::size_t pseudo_atom_index);

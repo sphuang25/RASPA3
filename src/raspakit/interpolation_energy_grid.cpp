@@ -20,6 +20,9 @@ import interactions_external_field_grid;
 import mdspan;
 #endif
 
+constexpr std::uint64_t GRID_MAGIC = 0x5253503347524431ULL;
+constexpr std::uint32_t GRID_VERSION = 1;
+
 // For a framework that is kept rigid it is effecient to precompute the energy and forces.
 // The amount of points is compute from
 //   (a) option 'SpacingVDWGrid 0.15' for Van der Waal grids
@@ -529,6 +532,209 @@ void InterpolationEnergyGrid::makeExternalFieldInterpolationGrid(std::ostream& s
   }
 }
 
+/**
+ * @brief Saves the framework interpolation energy grid to a binary file.
+ *
+ * The binary file contains:
+ * - GRID_MAGIC: File identifier.
+ * - GRID_VERSION: Binary format version.
+ * - dimensions[4]: Interpolation order and grid dimensions (Nx, Ny, Nz).
+ * - origin[3]: Cartesian coordinates of the grid origin. (does not include cell parameter, since cif file has the infomation)
+ * - data: Interpolation coefficients stored as double-precision values.
+ *
+ * @param filename Path to the output binary file.
+ *
+ * @throws std::runtime_error If the grid size is inconsistent
+ *         or the file cannot be written.
+ *
+ * @note The framework geometry is not stored in the grid file.
+ *       The corresponding CIF file and simulation box must be
+ *       consistent with those used to generate the grid.
+ */
+void InterpolationEnergyGrid::saveGrid(
+    const std::string& filename,
+    std::ostream& stream ) const
+{
+  std::filesystem::path path(filename);
+
+  if (!path.parent_path().empty())
+  {
+    std::filesystem::create_directories(path.parent_path());
+  }
+
+  
+
+
+  const std::uint64_t n = data.size();
+  const std::size_t expectedSize =
+    static_cast<std::size_t>(std::to_underlying(order)) *
+    numberOfGridPoints.x *
+    numberOfGridPoints.y *
+    numberOfGridPoints.z;
+  const std::uint64_t dimensions[4] = {
+      static_cast<std::uint64_t>(std::to_underlying(order)),
+      static_cast<std::uint64_t>(numberOfGridPoints.x),
+      static_cast<std::uint64_t>(numberOfGridPoints.y),
+      static_cast<std::uint64_t>(numberOfGridPoints.z)
+  };
+  const double originValues[3] = {
+    this->origin.x,
+    this->origin.y,
+    this->origin.z
+};
+
+
+
+  if (n != expectedSize)
+  {
+      throw std::runtime_error("[SPH] Interpolation grid size mismatch. Ending before overwriting the file...");
+  }
+  std::ofstream out(filename, std::ios::binary | std::ios::trunc);
+
+  if (!out)
+  {
+    throw std::runtime_error("[SPH] Cannot open grid file: " + filename);
+  }
+
+  out.write(reinterpret_cast<const char*>(&GRID_MAGIC),
+            sizeof(GRID_MAGIC));
+
+  out.write(reinterpret_cast<const char*>(&GRID_VERSION),
+            sizeof(GRID_VERSION));
+
+  out.write(
+    reinterpret_cast<const char*>(dimensions),
+    sizeof(dimensions)
+  );
+  out.write(
+    reinterpret_cast<const char*>(originValues),
+    sizeof(originValues)
+  );
+
+  out.write(reinterpret_cast<const char*>(data.data()),
+            static_cast<std::streamsize>(n * sizeof(double)));
+
+  if (!out)
+  {
+    throw std::runtime_error("Failed to save grid: " + filename);
+  }
+  std::print(stream, "[SPH] Saved interpolation grid to: {}\n", filename);
+}
+
+/**
+ * @brief Loads a framework interpolation energy grid from a binary file.
+ *
+ * Reads and validates the following data:
+ * - GRID_MAGIC: File identifier.
+ * - GRID_VERSION: Binary format version.
+ * - dimensions[4]: Interpolation order and grid dimensions (Nx, Ny, Nz).
+ * - origin[3]: Cartesian coordinates of the grid origin.
+ * - data: Interpolation coefficients stored as double-precision values.
+ *
+ * Validates the file identifier, version, grid dimensions, and origin
+ * against the current InterpolationEnergyGrid instance. The origin
+ * must not contain NaN values and must match within a tolerance of 1e-10.
+ *
+ * @param filename Path to the input binary grid file.
+ * @param stream Output stream for logging errors and warnings.
+ *
+ * @return true if the grid is successfully loaded and validated;
+ *         false if the file is missing, corrupted, or incompatible.
+ *
+ * @note The existing grid data is replaced only after successful
+ *       validation and reading of the binary file.
+ *
+ * @note The framework geometry is not stored in the grid file.
+ *       The corresponding CIF file and simulation box must be
+ *       consistent with those used to generate the grid.
+ */
+bool InterpolationEnergyGrid::loadGrid(
+    const std::string& filename,
+    std::ostream& stream)
+{
+    std::ifstream in(filename, std::ios::binary);
+
+    if (!in)
+    {
+        std::print(stream, "[SPH] Cannot open grid file: {}\n", filename);
+        return false;
+    }
+
+    std::uint64_t magic{};
+    std::uint32_t version{};
+    std::uint64_t dimensions[4]{};
+
+    in.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+    in.read(reinterpret_cast<char*>(&version), sizeof(version));
+
+    if (!in){
+      std::print(stream, "[SPH] Cannot read. Reading magic number, version number, keysize error.\n");
+      return false;
+    }
+    if (magic != GRID_MAGIC){
+      std::print(stream, "[SPH] Magic number mismatch, got {}, expected {}.\n", magic, GRID_MAGIC);
+      return false;
+    }
+    if (version != GRID_VERSION){
+      std::print(stream, "[SPH] version mismatch, got {}, expected {}.\n", version, GRID_VERSION);
+      return false;
+    }
+
+    in.read(reinterpret_cast<char*>(dimensions), sizeof(dimensions));
+    if (!in){
+      std::print(stream, "[SPH] Cannot read dimension.\n");
+      return false;
+    }
+
+    const std::uint64_t expectedDimensions[4] = {
+    static_cast<std::uint64_t>(std::to_underlying(order)),
+    static_cast<std::uint64_t>(numberOfGridPoints.x),
+    static_cast<std::uint64_t>(numberOfGridPoints.y),
+    static_cast<std::uint64_t>(numberOfGridPoints.z)
+    };
+
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        if (dimensions[i] != expectedDimensions[i])
+        {
+            std::print(stream, "[SPH] Dimension {} mismatch.\n", i);
+            return false;
+        }
+    }
+
+    double storedOrigin[3]{};
+    if (!in.read(reinterpret_cast<char*>(storedOrigin), sizeof(storedOrigin)))
+    {
+        std::print(stream, "[SPH] Failed to read grid origin.\n");
+        return false;
+    }
+
+    constexpr double tolerance = 1e-10;
+
+    if (std::abs(storedOrigin[0] - this->origin.x) > tolerance ||
+    std::abs(storedOrigin[1] - this->origin.y) > tolerance ||
+    std::abs(storedOrigin[2] - this->origin.z) > tolerance)
+{
+    std::print(stream, "[SPH] Grid origin mismatch.\n");
+    return false;
+}
+
+    std::vector<double> loaded(data.size());
+
+    in.read(reinterpret_cast<char*>(loaded.data()),
+            static_cast<std::streamsize>(loaded.size() * sizeof(double)));
+
+    if (!in)
+    {
+      std::print(stream, "[SPH] Data read fails.");
+      return false;
+    }
+
+    data = std::move(loaded);
+
+    return true;
+}
+
 // The grid files are stored row-order (std::layout_right)
 // The grid is arranged with the x axis as the outer loop and the z axis as the inner loop
 // calculateEnergyAtPosition using ForceFieldSettings::InterpolationGridType::EwaldReal calcalulates energy for a unit-charge
@@ -537,6 +743,24 @@ void InterpolationEnergyGrid::makeFrameworkInterpolationGrid(std::ostream& strea
                                                     const ForceField& forceField, const Framework& framework,
                                                     double cutOff, std::size_t pseudo_atom_index)
 {
+    // load grid!
+    const std::string atomName =
+      forceField.pseudoAtoms[pseudo_atom_index].name;
+
+    const std::string filename =
+      (std::filesystem::path("interpolation_grid") /
+      (interpolationGridType ==
+            ForceFieldSettings::InterpolationGridType::EwaldReal
+            ? "coulomb.grid"
+            : forceField.pseudoAtoms[pseudo_atom_index].name + ".grid"
+     )).string();
+
+    if (loadGrid(filename, stream))
+    {
+      std::print(stream, "[SPH] Loaded interpolation grid: {}\n", filename);
+      return;
+    }
+
   double3 delta = double3(1.0 / static_cast<double>(numberOfCells.x), 1.0 / static_cast<double>(numberOfCells.y),
                           1.0 / static_cast<double>(numberOfCells.z));
   std::mdspan<double, std::dextents<std::size_t, 4>, std::layout_left> data_cell(
@@ -548,7 +772,7 @@ void InterpolationEnergyGrid::makeFrameworkInterpolationGrid(std::ostream& strea
   const int3 number_of_unit_cells = unit_cell_box.smallestNumberOfUnitCellsForMinimumImagesConvention(cutOff);
   const std::vector<Atom> framework_atoms = framework.makeSuperCell(number_of_unit_cells);
   const SimulationBox super_cell_box = unit_cell_box.scaled(number_of_unit_cells);
-
+  std::print(stream, "Currently Inside function makeFrameworkInterpolationGrid v2\n");
   std::print(stream, "(Using {} {} {} periodic cells to create grid)\n", number_of_unit_cells.x, number_of_unit_cells.y,
              number_of_unit_cells.z);
 
@@ -705,8 +929,9 @@ void InterpolationEnergyGrid::makeFrameworkInterpolationGrid(std::ostream& strea
       }
     }
   }
+  
+  saveGrid(filename, stream);
   std::chrono::steady_clock::time_point time_end = std::chrono::steady_clock::now();
-
   std::chrono::duration<double> time_duration = time_end - time_begin;
   std::print(stream, "Grid done... ({:14f} [s])\n", time_duration.count());
   std::print(stream, "\n");
