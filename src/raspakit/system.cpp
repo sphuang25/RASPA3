@@ -2082,7 +2082,7 @@ void System::writeRestartFile(std::size_t systemId)
   {
     std::vector<double3> positions{};
 
-    if (numberOfMoleculesPerComponent[component_id] > 0)
+    if (numberOfMoleculesPerComponent[component_id] > numberOfFractionalMoleculesPerComponent[component_id]) // contain integer adsorbate
     {
       positions = spanOfIntegerAtomsOfComponent(component_id) | std::views::transform(&Atom::position) |
                   std::ranges::to<std::vector>();

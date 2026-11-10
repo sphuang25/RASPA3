@@ -1,4 +1,8 @@
 #include <locale.h>
+#include <csignal>
+#include <execinfo.h>
+#include <unistd.h>
+#include <cstdlib>
 import std;
 
 import graceful_shutdown;
@@ -10,8 +14,42 @@ import commandline;
 import libtorch_test;
 #endif
 
+void crashHandler(int sig)
+{
+    void* frames[64];
+    int count = backtrace(frames, 64);
+
+    backtrace_symbols_fd(frames, count, STDERR_FILENO);
+
+    _Exit(128 + sig);
+}
+
+namespace std
+{
+    void __glibcxx_assert_fail(
+        const char* file,
+        int line,
+        const char* function,
+        const char* condition) noexcept
+    {
+        std::cerr << "\n=== C++ ASSERTION FAILED ===\n"
+                  << "File: " << file << '\n'
+                  << "Line: " << line << '\n'
+                  << "Function: " << function << '\n'
+                  << "Condition: " << condition << "\n\n";
+
+        void* frames[128];
+        int count = backtrace(frames, 128);
+
+        backtrace_symbols_fd(frames, count, STDERR_FILENO);
+
+        std::_Exit(134);
+    }
+}
+
 int main(int argc, char* argv[])
 {
+
   using namespace std::literals;
 
   setlocale(LC_ALL, "en-US");
